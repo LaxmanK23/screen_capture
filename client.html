@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LAN Remote Control Client</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 16px;
+      }
+      #video {
+        max-width: 100%;
+        border: 1px solid #ddd;
+        cursor: crosshair;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0;
+        flex-wrap: wrap;
+      }
+      .small {
+        font-size: 12px;
+        color: #555;
+      }
+      input[type="text"],
+      input[type="password"] {
+        padding: 6px 8px;
+      }
+      button {
+        padding: 6px 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>LAN Remote Control — Client</h2>
+    <div class="row">
+      <label
+        >Server (host:port):
+        <input id="server" type="text" placeholder="192.168.1.50:8000"
+      /></label>
+      <label
+        >Password: <input id="password" type="password" placeholder="password"
+      /></label>
+      <button id="connectBtn">Connect</button>
+      <label><input id="controlToggle" type="checkbox" /> Enable control</label>
+    </div>
+    <div class="row small">
+      <div>
+        Click/drag on the preview when control is enabled. Type below to send
+        keystrokes.
+      </div>
+    </div>
+    <img id="video" alt="screen" />
+    <div class="row">
+      <input
+        id="textInput"
+        type="text"
+        placeholder="Type here and press Enter..."
+        style="width: 320px"
+      />
+      <button id="enterBtn">Enter</button>
+      <button id="escBtn">Esc</button>
+    </div>
+
+    <script
+      src="https://cdn.socket.io/4.7.2/socket.io.min.js"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      const serverEl = document.getElementById("server");
+      const passwordEl = document.getElementById("password");
+      const connectBtn = document.getElementById("connectBtn");
+      const controlToggle = document.getElementById("controlToggle");
+      const imgEl = document.getElementById("video");
+      const textInput = document.getElementById("textInput");
+      const enterBtn = document.getElementById("enterBtn");
+      const escBtn = document.getElementById("escBtn");
+
+      let socket = null;
+      let serverBase = "";
+      let password = "";
+
+      function connect() {
+        serverBase = `http://${serverEl.value}`;
+        password = passwordEl.value;
+
+        imgEl.src = `${serverBase}/stream?token=${encodeURIComponent(
+          password
+        )}`;
+
+        socket = io(serverBase, { transports: ["websocket"] });
+        socket.on("connect", () => {
+          socket.emit("auth", { password });
+        });
+        socket.on("auth_ok", () => console.log("Authorized"));
+        socket.on("auth_failed", () => alert("Auth failed"));
+        socket.on("need_auth", () => {});
+        socket.on("error", (e) => console.log("server error", e));
+      }
+
+      connectBtn.addEventListener("click", connect);
+
+      function coordsToNormalized(evt) {
+        const rect = imgEl.getBoundingClientRect();
+        const nx = (evt.clientX - rect.left) / rect.width;
+        const ny = (evt.clientY - rect.top) / rect.height;
+        return {
+          nx: Math.max(0, Math.min(1, nx)),
+          ny: Math.max(0, Math.min(1, ny)),
+        };
+      }
+
+      let lastMove = 0;
+      imgEl.addEventListener("mousemove", (evt) => {
+        if (!controlToggle.checked || !socket) return;
+        const now = performance.now();
+        if (now - lastMove < 50) return; // ~20 Hz
+        lastMove = now;
+        const { nx, ny } = coordsToNormalized(evt);
+        socket.emit("mouse_move", { nx, ny });
+      });
+
+      imgEl.addEventListener("click", () => {
+        if (!controlToggle.checked || !socket) return;
+        socket.emit("mouse_click", { button: "left", double: false });
+      });
+
+      imgEl.addEventListener("dblclick", () => {
+        if (!controlToggle.checked || !socket) return;
+        socket.emit("mouse_click", { button: "left", double: true });
+      });
+
+      imgEl.addEventListener("contextmenu", (evt) => {
+        if (!controlToggle.checked || !socket) return;
+        evt.preventDefault();
+        socket.emit("mouse_click", { button: "right", double: false });
+      });
+
+      let dragging = false;
+
+      imgEl.addEventListener("mousedown", (evt) => {
+        if (!controlToggle.checked || !socket) return;
+        dragging = true;
+        socket.emit("mouse_down", {
+          button: evt.button === 2 ? "right" : "left",
+        });
+      });
+
+      imgEl.addEventListener("mouseup", (evt) => {
+        if (!controlToggle.checked || !socket) return;
+        dragging = false;
+        socket.emit("mouse_up", {
+          button: evt.button === 2 ? "right" : "left",
+        });
+      });
+
+      // Wheel scroll
+      imgEl.addEventListener(
+        "wheel",
+        (evt) => {
+          if (!controlToggle.checked || !socket) return;
+          evt.preventDefault();
+          // Typical deltaY is ~±100 per notch; scale down a bit
+          const dy = Math.sign(evt.deltaY) * -80; // invert if needed
+          const dx = Math.sign(evt.deltaX) * -80;
+          socket.emit("mouse_scroll", { dx, dy });
+        },
+        { passive: false }
+      );
+
+      textInput.addEventListener("keydown", (evt) => {
+        if (!socket) return;
+        if (evt.key === "Enter") {
+          const text = textInput.value;
+          if (text) socket.emit("key_type", { text });
+          textInput.value = "";
+        }
+      });
+
+      enterBtn.addEventListener("click", () => {
+        if (socket) socket.emit("key_press", { key: "enter" });
+      });
+      escBtn.addEventListener("click", () => {
+        if (socket) socket.emit("key_press", { key: "esc" });
+      });
+    </script>
+  </body>
+</html>
