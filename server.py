@@ -16,13 +16,15 @@ import pyautogui
 # ---------------------- Configuration ----------------------
 PASSWORD = os.environ.get("LRC_PASSWORD", "change-me")  # <<< set a strong env var!
 HOST = os.environ.get("LRC_HOST", "0.0.0.0")
-PORT = int(os.environ.get("LRC_PORT", "8000"))
+PORT = int(os.environ.get("LRC_PORT", "8010"))
 FPS = int(os.environ.get("LRC_FPS", "10"))
 JPEG_QUALITY = int(os.environ.get("LRC_JPEG_QUALITY", "70"))
 # -----------------------------------------------------------
 
 app = Flask(__name__, static_folder=None)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+# socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
 
 # Track auth'd socket session IDs
 authorized_sids = set()
