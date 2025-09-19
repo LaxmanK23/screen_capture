@@ -2,17 +2,18 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>LAN Remote Control Client</title>
+    <title>LAN Remote Control — Client (debug)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        margin: 16px;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 12px;
       }
       #video {
         max-width: 100%;
         border: 1px solid #ddd;
         cursor: crosshair;
+        user-select: none;
       }
       .row {
         display: flex;
@@ -32,28 +33,49 @@
       button {
         padding: 6px 10px;
       }
+      #status {
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #eee;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
-    <h2>LAN Remote Control — Client</h2>
+    <h2>LAN Remote Control — Client (debug)</h2>
+
     <div class="row">
       <label
         >Server (host:port):
-        <input id="server" type="text" placeholder="192.168.1.50:8010"
-      /></label>
+        <input
+          id="server"
+          type="text"
+          placeholder="192.168.1.114:8010"
+          value="192.168.1.114:8010"
+        />
+      </label>
       <label
-        >Password: <input id="password" type="password" placeholder="password"
-      /></label>
+        >Password:
+        <input
+          id="password"
+          type="password"
+          placeholder="password"
+          value="change-me"
+        />
+      </label>
       <button id="connectBtn">Connect</button>
       <label><input id="controlToggle" type="checkbox" /> Enable control</label>
+      <div id="status">disconnected</div>
     </div>
+
     <div class="row small">
       <div>
-        Click/drag on the preview when control is enabled. Type below to send
-        keystrokes.
+        Click/drag on the preview when control is enabled. Check devtools
+        console for logs.
       </div>
     </div>
-    <img id="video" alt="screen" />
+
+    <img id="video" alt="screen preview" />
     <div class="row">
       <input
         id="textInput"
@@ -65,10 +87,7 @@
       <button id="escBtn">Esc</button>
     </div>
 
-    <script
-      src="https://cdn.socket.io/4.7.2/socket.io.min.js"
-      crossorigin="anonymous"
-    ></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
       const serverEl = document.getElementById("server");
       const passwordEl = document.getElementById("password");
@@ -78,27 +97,85 @@
       const textInput = document.getElementById("textInput");
       const enterBtn = document.getElementById("enterBtn");
       const escBtn = document.getElementById("escBtn");
+      const statusEl = document.getElementById("status");
 
       let socket = null;
       let serverBase = "";
       let password = "";
+      let isAuthorized = false;
+
+      function setStatus(s) {
+        statusEl.textContent = s;
+        console.log("[STATUS]", s);
+      }
 
       function connect() {
-        serverBase = `http://${serverEl.value}`;
+        serverBase = `http://${serverEl.value.replace(/\/+$/, "")}`;
         password = passwordEl.value;
+        isAuthorized = false;
+        setStatus("connecting...");
 
+        // set preview
         imgEl.src = `${serverBase}/stream?token=${encodeURIComponent(
           password
         )}`;
 
-        socket = io(serverBase, { transports: ["websocket"] });
+        // Create socket without forcing websocket — allow fallback to polling if needed
+        socket = io(serverBase, {
+          transports: ["websocket", "polling"],
+          reconnectionAttempts: 3,
+          timeout: 5000,
+        });
+
         socket.on("connect", () => {
+          console.log("socket connected, id=", socket.id);
+          setStatus("connected (socket)");
+          // ask server to auth
           socket.emit("auth", { password });
         });
-        socket.on("auth_ok", () => console.log("Authorized"));
-        socket.on("auth_failed", () => alert("Auth failed"));
-        socket.on("need_auth", () => {});
-        socket.on("error", (e) => console.log("server error", e));
+
+        socket.on("connect_error", (err) => {
+          console.error("connect_error", err);
+          setStatus("connect_error");
+        });
+
+        socket.on("connect_timeout", () => {
+          console.warn("connect_timeout");
+          setStatus("connect_timeout");
+        });
+
+        socket.on("reconnect_attempt", (n) => {
+          console.log("reconnect attempt", n);
+          setStatus("reconnecting...");
+        });
+
+        socket.on("need_auth", () => {
+          console.log("server asked for auth");
+          setStatus("need_auth");
+        });
+
+        socket.on("auth_ok", () => {
+          console.log("auth_ok received");
+          isAuthorized = true;
+          setStatus("authorized");
+        });
+
+        socket.on("auth_failed", () => {
+          console.warn("auth_failed");
+          isAuthorized = false;
+          setStatus("auth_failed");
+          alert("Auth failed — check password");
+        });
+
+        socket.on("disconnect", (reason) => {
+          console.log("socket disconnected:", reason);
+          isAuthorized = false;
+          setStatus("disconnected");
+        });
+
+        socket.on("error", (e) => {
+          console.error("server error:", e);
+        });
       }
 
       connectBtn.addEventListener("click", connect);
@@ -115,56 +192,53 @@
 
       let lastMove = 0;
       imgEl.addEventListener("mousemove", (evt) => {
-        if (!controlToggle.checked || !socket) return;
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
         const now = performance.now();
-        if (now - lastMove < 50) return; // ~20 Hz
+        if (now - lastMove < 40) return; // ~25Hz
         lastMove = now;
         const { nx, ny } = coordsToNormalized(evt);
         socket.emit("mouse_move", { nx, ny });
       });
 
-      imgEl.addEventListener("click", () => {
-        if (!controlToggle.checked || !socket) return;
-        socket.emit("mouse_click", { button: "left", double: false });
+      imgEl.addEventListener("click", (evt) => {
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
+        socket.emit("mouse_click", {
+          button: evt.button === 2 ? "right" : "left",
+          double: false,
+        });
       });
 
-      imgEl.addEventListener("dblclick", () => {
-        if (!controlToggle.checked || !socket) return;
+      imgEl.addEventListener("dblclick", (evt) => {
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
         socket.emit("mouse_click", { button: "left", double: true });
       });
 
       imgEl.addEventListener("contextmenu", (evt) => {
-        if (!controlToggle.checked || !socket) return;
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
         evt.preventDefault();
         socket.emit("mouse_click", { button: "right", double: false });
       });
 
-      let dragging = false;
-
       imgEl.addEventListener("mousedown", (evt) => {
-        if (!controlToggle.checked || !socket) return;
-        dragging = true;
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
         socket.emit("mouse_down", {
           button: evt.button === 2 ? "right" : "left",
         });
       });
 
       imgEl.addEventListener("mouseup", (evt) => {
-        if (!controlToggle.checked || !socket) return;
-        dragging = false;
+        if (!controlToggle.checked || !socket || !isAuthorized) return;
         socket.emit("mouse_up", {
           button: evt.button === 2 ? "right" : "left",
         });
       });
 
-      // Wheel scroll
       imgEl.addEventListener(
         "wheel",
         (evt) => {
-          if (!controlToggle.checked || !socket) return;
+          if (!controlToggle.checked || !socket || !isAuthorized) return;
           evt.preventDefault();
-          // Typical deltaY is ~±100 per notch; scale down a bit
-          const dy = Math.sign(evt.deltaY) * -80; // invert if needed
+          const dy = Math.sign(evt.deltaY) * -80;
           const dx = Math.sign(evt.deltaX) * -80;
           socket.emit("mouse_scroll", { dx, dy });
         },
@@ -172,7 +246,7 @@
       );
 
       textInput.addEventListener("keydown", (evt) => {
-        if (!socket) return;
+        if (!socket || !isAuthorized) return;
         if (evt.key === "Enter") {
           const text = textInput.value;
           if (text) socket.emit("key_type", { text });
@@ -181,10 +255,10 @@
       });
 
       enterBtn.addEventListener("click", () => {
-        if (socket) socket.emit("key_press", { key: "enter" });
+        if (socket && isAuthorized) socket.emit("key_press", { key: "enter" });
       });
       escBtn.addEventListener("click", () => {
-        if (socket) socket.emit("key_press", { key: "esc" });
+        if (socket && isAuthorized) socket.emit("key_press", { key: "esc" });
       });
     </script>
   </body>
