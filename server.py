@@ -157,6 +157,12 @@ def on_mouse_up(data):
     pyautogui.mouseUp(button=button)
 
 
+@socketio.on("ping_test")
+@require_token_ws
+def on_ping_test(data):
+    return True  # immediately ack back to client
+
+
 # ---------------------- Run ----------------------
 if __name__ == "__main__":
     print(f"[*] LAN Remote Control server on {HOST}:{PORT}")
